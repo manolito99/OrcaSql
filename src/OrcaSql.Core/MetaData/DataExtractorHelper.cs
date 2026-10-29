@@ -70,7 +70,7 @@ namespace OrcaSql.Core.MetaData
         /// <summary>
         /// Physical location (leaf_offset, leaf_null_bit, leaf_bit_position) of each column, when known.
         /// </summary>
-        public Dictionary<DataColumn, SystemInternalsPartitionColumn> Physical { get; private set; }
+        internal Dictionary<DataColumn, SystemInternalsPartitionColumn> Physical { get; private set; }
 
         public ISet<string> DeferredColumns { get; }
 
