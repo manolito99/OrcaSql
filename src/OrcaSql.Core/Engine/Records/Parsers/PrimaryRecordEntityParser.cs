@@ -143,6 +143,11 @@ namespace OrcaSql.Core.Engine.Records.Parsers
         /// </summary>
         private static object ReadPhysical(PrimaryRecord record, DataColumn col, SystemInternalsPartitionColumn physical, ISqlType sqlType, DataExtractorHelper schema)
         {
+            // A dropped column (or the old copy of a column altered in place, which shares its bytes with the
+            // live column) is never decoded.
+            if (physical.IsDropped || schema.IsDroppedColumn(col))
+                return null;
+
             if (col.UnderlyingType == ColumnType.Computed)
                 return sqlType.GetValue(null);
 
