@@ -163,7 +163,9 @@ namespace OrcaSql.Core.Engine.Records.Parsers
             if (physical.LeafOffset < 0)
             {
                 int variableIndex = -physical.LeafOffset - 1;
-                if (variableIndex >= record.NumberOfVariableLengthColumns)
+                // Not stored: beyond the record's variable-length columns, or the slot of a forwarded record's back
+                // pointer (its last variable-length column, which isn't data) when its trailing columns are empty.
+                if (variableIndex >= record.NumberOfVariableLengthColumns || !record.VariableLengthColumnData.ContainsKey(variableIndex))
                     return sqlType.GetValue(new byte[0]);
 
                 if (schema.ShouldDefer(col))
