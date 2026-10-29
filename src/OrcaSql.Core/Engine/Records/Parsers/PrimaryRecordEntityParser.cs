@@ -3,6 +3,7 @@ using System.Linq;
 using OrcaSql.Core.Engine.Pages;
 using OrcaSql.Core.Engine.SqlTypes;
 using OrcaSql.Core.MetaData;
+using OrcaSql.Core.MetaData.DMVs;
 
 namespace OrcaSql.Core.Engine.Records.Parsers
 {
@@ -53,6 +54,10 @@ namespace OrcaSql.Core.Engine.Records.Parsers
                             if (record.SparseVector.ColumnValues.ContainsKey((short)col.ColumnID))
                                 columnValue = sqlType.GetValue(record.SparseVector.ColumnValues[(short)col.ColumnID]);
                         }
+                    }
+                    else if (schema.Physical != null && schema.Physical.TryGetValue(col, out var physical))
+                    {
+                        columnValue = ReadPhysical(record, col, physical, sqlType, schema);
                     }
                     else
                     {
@@ -129,6 +134,57 @@ namespace OrcaSql.Core.Engine.Records.Parsers
 
                 yield return dataRow;
             }
+        }
+
+        /// <summary>
+        /// Reads a column using its physical location from sysrscols instead of deriving it from the column order:
+        /// fixed-length columns at leaf_offset, variable-length columns at slot -leaf_offset - 1, the null bit at
+        /// leaf_null_bit and bit columns at leaf_bit_position.
+        /// </summary>
+        private static object ReadPhysical(PrimaryRecord record, DataColumn col, SystemInternalsPartitionColumn physical, ISqlType sqlType, DataExtractorHelper schema)
+        {
+            if (col.UnderlyingType == ColumnType.Computed)
+                return sqlType.GetValue(null);
+
+            // Column added after the record was written: it isn't stored in the record.
+            int nullIndex = physical.LeafNullBit - 1;
+            if (nullIndex >= record.NumberOfColumns)
+                return col.IsNullable ? null : schema.GetDefaultValue(col, sqlType);
+
+            if (record.HasNullBitmap && record.NullBitmap[nullIndex])
+                return null;
+
+            if (physical.LeafOffset < 0)
+            {
+                int variableIndex = -physical.LeafOffset - 1;
+                if (variableIndex >= record.NumberOfVariableLengthColumns)
+                    return sqlType.GetValue(new byte[0]);
+
+                if (schema.ShouldDefer(col))
+                    return new DeferredColumnValue(record.VariableLengthColumnData[variableIndex], sqlType);
+
+                var data = record.VariableLengthColumnData[variableIndex].GetBytes()?.ToArray();
+                return sqlType.GetValue(data ?? new byte[0]);
+            }
+
+            // leaf_offset counts from the start of the record; FixedLengthData starts after the 4 byte header.
+            int start = physical.LeafOffset - 4;
+
+            if (col.UnderlyingType == ColumnType.Bit)
+            {
+                if (start >= record.FixedLengthData.Length)
+                    return null;
+
+                return ((record.FixedLengthData[start] >> physical.LeafBitPosition) & 1) == 1;
+            }
+
+            int length = physical.MaxInrowLength;
+            if (start + length > record.FixedLengthData.Length)
+                return null;
+
+            var bytes = new byte[length];
+            System.Array.Copy(record.FixedLengthData, start, bytes, 0, length);
+            return sqlType.GetValue(bytes);
         }
 
         internal override PagePointer NextPage => page.Header.NextPage;
