@@ -133,7 +133,7 @@ namespace OrcaSql.Core.Engine
             return new PrimaryRecordPage(GetPageBytes(loc, isSysTable), compression, this);
         }
 
-        private byte[] GetPageBytes(PagePointer pagePointer, bool putResultsToCache = true)
+        internal byte[] GetPageBytes(PagePointer pagePointer, bool putResultsToCache = true)
         {
             return _bufferManager.GetPageBytes(pagePointer.FileID, pagePointer.PageID, putResultsToCache);
         }
