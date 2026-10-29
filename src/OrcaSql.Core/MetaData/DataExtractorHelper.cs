@@ -133,7 +133,7 @@ namespace OrcaSql.Core.MetaData
 
         public bool IsDroppedColumn(DataColumn col)
         {
-            return col.Name.StartsWith("<<DROPPED");
+            return col.Name.StartsWith("<<DROPPED", System.StringComparison.Ordinal);
         }
 
         public object GetDefaultValue(DataColumn col, ISqlType sqlType)

@@ -27,6 +27,20 @@ namespace OrcaSql.Core.Engine.Records.Parsers
 
         internal override IEnumerable<Row> GetEntities(DataExtractorHelper schema)
         {
+            // Type decoders hold no state between values, so one per column serves the whole page. Bit columns are
+            // the exception: they track the bit being read in the record and are still created per record.
+            var columns = schema.Columns;
+            var sqlTypes = new ISqlType[columns.Count];
+            var physicalColumns = new PhysicalColumn[columns.Count];
+            for (int i = 0; i < columns.Count; i++)
+            {
+                if (columns[i].UnderlyingType != ColumnType.Bit)
+                    sqlTypes[i] = SqlTypeFactory.Create(columns[i], null, compression);
+
+                if (schema.Physical != null && schema.Physical.TryGetValue(columns[i], out var physicalColumn))
+                    physicalColumns[i] = new PhysicalColumn(physicalColumn, schema.IsDroppedColumn(columns[i]));
+            }
+
             foreach (var record in page.Records)
             {
                 // Don't process forwarded blob fragments as they should only be processed from the referenced record
@@ -39,9 +53,10 @@ namespace OrcaSql.Core.Engine.Records.Parsers
                 var readState = new RecordReadState(schema.BitColumnsCount);
                 var bitColumnBytes = new byte[0];
 
-                foreach (var col in schema.Columns)
+                for (int columnIndex = 0; columnIndex < columns.Count; columnIndex++)
                 {
-                    var sqlType = SqlTypeFactory.Create(col, readState, compression);
+                    var col = columns[columnIndex];
+                    var sqlType = sqlTypes[columnIndex] ?? SqlTypeFactory.Create(col, readState, compression);
                     object columnValue = null;
 
                     // Sparse columns needs to retrieve their values from the sparse vector, contained in the very last
@@ -56,9 +71,9 @@ namespace OrcaSql.Core.Engine.Records.Parsers
                                 columnValue = sqlType.GetValue(record.SparseVector.ColumnValues[(short)col.ColumnID]);
                         }
                     }
-                    else if (schema.Physical != null && schema.Physical.TryGetValue(col, out var physical))
+                    else if (physicalColumns[columnIndex] != null)
                     {
-                        columnValue = ReadPhysical(record, col, physical, sqlType, schema);
+                        columnValue = ReadPhysical(record, col, physicalColumns[columnIndex], sqlType, schema);
                     }
                     else
                     {
@@ -138,15 +153,37 @@ namespace OrcaSql.Core.Engine.Records.Parsers
         }
 
         /// <summary>
+        /// The physical location of a column, read once from the catalog instead of on every row (each property of
+        /// SystemInternalsPartitionColumn is a lookup by name).
+        /// </summary>
+        private sealed class PhysicalColumn
+        {
+            public readonly bool IsDropped;
+            public readonly short LeafOffset;
+            public readonly short LeafNullBit;
+            public readonly byte LeafBitPosition;
+            public readonly short MaxInrowLength;
+
+            public PhysicalColumn(SystemInternalsPartitionColumn column, bool droppedInSchema)
+            {
+                IsDropped = column.IsDropped || droppedInSchema;
+                LeafOffset = column.LeafOffset;
+                LeafNullBit = column.LeafNullBit;
+                LeafBitPosition = column.LeafBitPosition;
+                MaxInrowLength = column.MaxInrowLength;
+            }
+        }
+
+        /// <summary>
         /// Reads a column using its physical location from sysrscols instead of deriving it from the column order:
         /// fixed-length columns at leaf_offset, variable-length columns at slot -leaf_offset - 1, the null bit at
         /// leaf_null_bit and bit columns at leaf_bit_position.
         /// </summary>
-        private static object ReadPhysical(PrimaryRecord record, DataColumn col, SystemInternalsPartitionColumn physical, ISqlType sqlType, DataExtractorHelper schema)
+        private static object ReadPhysical(PrimaryRecord record, DataColumn col, PhysicalColumn physical, ISqlType sqlType, DataExtractorHelper schema)
         {
             // A dropped column (or the old copy of a column altered in place, which shares its bytes with the
             // live column) is never decoded.
-            if (physical.IsDropped || schema.IsDroppedColumn(col))
+            if (physical.IsDropped)
                 return null;
 
             if (col.UnderlyingType == ColumnType.Computed)
@@ -171,8 +208,8 @@ namespace OrcaSql.Core.Engine.Records.Parsers
                 if (schema.ShouldDefer(col))
                     return new DeferredColumnValue(record.VariableLengthColumnData[variableIndex], sqlType);
 
-                var data = record.VariableLengthColumnData[variableIndex].GetBytes()?.ToArray();
-                return sqlType.GetValue(data ?? new byte[0]);
+                var data = record.VariableLengthColumnData[variableIndex].GetBytes();
+                return sqlType.GetValue(data as byte[] ?? data?.ToArray() ?? new byte[0]);
             }
 
             // leaf_offset counts from the start of the record; FixedLengthData starts after the 4 byte header.
