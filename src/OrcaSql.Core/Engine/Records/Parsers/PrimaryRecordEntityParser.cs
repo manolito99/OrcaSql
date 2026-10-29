@@ -15,7 +15,8 @@ namespace OrcaSql.Core.Engine.Records.Parsers
 
         static PrimaryRecordEntityParser()
         {
-            _recordsToSkip = new HashSet<RecordType>(new[]{ RecordType.BlobFragment , RecordType.GhostData });
+            // Forwarded records are read through their forwarding stub; reading them again here would return them twice.
+            _recordsToSkip = new HashSet<RecordType>(new[]{ RecordType.BlobFragment , RecordType.GhostData, RecordType.Forwarded });
         }
 
 		internal PrimaryRecordEntityParser(PrimaryRecordPage page, CompressionContext compression)
